@@ -1,0 +1,189 @@
+{
+ "nbformat": 4,
+ "nbformat_minor": 5,
+ "metadata": {
+  "language_info": {
+   "name": "python"
+  }
+ },
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# 🧬 Project 14: Gene Expression Time Series\n",
+    "### I 320D – Data Science for Biomedical Informatics | UT Austin\n",
+    "---\n",
+    "**Goal:** Cluster longitudinal RNA-seq data from healthy adults inoculated with H3N2 influenza to find temporal gene clusters.\n",
+    "\n",
+    "**Notebook structure (Adapted from Project 4 Sepsis template):**\n",
+    "\n",
+    "| Step | Topic |\n",
+    "|------|-------|\n",
+    "| 0 | Environment setup & data download |\n",
+    "| 1 | Data loading & first look |\n",
+    "| 2 | Exploratory data analysis (EDA) |\n",
+    "| 3 | Missing data & imputation |\n",
+    "| 4 | Feature engineering (Decoder Ring / Alignment Map) |\n",
+    "| 5 | Train / test split (Filtering Top Variable Genes) |\n",
+    "| 6 | Baseline model – Hierarchical Clustering |\n",
+    "| 7 | Temporal model – K-Means Trajectories |\n",
+    "| 8 | Evaluation (Cluster Cohesion) |\n",
+    "| 9 | Interpretation (GO Pathway Enrichment) |\n",
+    "| 10 | Discussion & reflection questions |"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "## Step 0 | Environment setup & data download"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "import matplotlib.pyplot as plt\n",
+    "import seaborn as sns\n",
+    "import warnings\n",
+    "warnings.filterwarnings('ignore')\n",
+    "\n",
+    "print(\"✅ Environment setup complete.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "## Step 1 | Data loading & first look\n",
+    "> **Note:** We are exclusively using GSE30550 for the expression matrix because it contains the hourly timepoints required by the rubric. SDY212 only contains Day 0 and Day 28."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "file_path = 'GSE30550_series_matrix.txt'\n",
+    "\n",
+    "# 1. Extract Sample Names from the text file header\n",
+    "sample_names = []\n",
+    "with open(file_path, 'r') as file:\n",
+    "    for line in file:\n",
+    "        if line.startswith('!Sample_title'):\n",
+    "            sample_names = [name.strip('\\\"\\n') for name in line.split('\\t')[1:]]\n",
+    "            break\n",
+    "\n",
+    "# 2. Load the actual expression matrix\n",
+    "gse_expr = pd.read_csv(file_path, sep='\\t', comment='!', index_col=0)\n",
+    "gse_expr.columns = sample_names\n",
+    "\n",
+    "print(\"✅ GSE30550 Loaded successfully.\")\n",
+    "display(gse_expr.head(3))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "## Step 2 | Exploratory data analysis (EDA)\n",
+    "Exploring shapes, data types, missing values, duplicates, and statistics."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "print(\"=\"*50 + \"\\n🔬 GSE30550 EXPRESSION EDA\\n\" + \"=\"*50)\n",
+    "\n",
+    "print(\"📐 Shape:\", gse_expr.shape)\n",
+    "print(f\"\\n📋 Columns: {len(gse_expr.columns)} columns (Samples)\")\n",
+    "print(f\"🧬 Data Types: {gse_expr.dtypes.nunique()} unique data type(s) -> {gse_expr.dtypes.unique()}\")\n",
+    "print(\"\\n💾 Memory Usage:\", round(gse_expr.memory_usage(deep=True).sum() / 1024**2, 2), \"MB\")\n",
+    "print(f\"\\n⚠️ Total Missing Values: {gse_expr.isnull().sum().sum():,}\")\n",
+    "print(f\"👯 Total Duplicate Rows (Genes): {gse_expr.duplicated().sum():,}\")\n",
+    "\n",
+    "print(\"\\n📊 Statistics (First 5 samples only to save space):\")\n",
+    "display(gse_expr.iloc[:, :5].describe())\n",
+    "\n",
+    "print(\"\\n👟 Last Look (Tail):\")\n",
+    "display(gse_expr.tail(3))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "## Step 3 | Missing data & imputation\n",
+    "> **Note:** GEO files often contain a trailing tab at the end of every row, which causes Pandas to generate a 'ghost column' of NaNs. We will drop this, along with any rows containing missing technical reads."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "print(\"Before cleanup:\", gse_expr.shape)\n",
+    "\n",
+    "# 1. Drop the 'Ghost Column' (removes columns where ALL values are NaN)\n",
+    "gse_expr = gse_expr.dropna(axis=1, how='all')\n",
+    "\n",
+    "# 2. Drop any rows (genes) with missing expression values\n",
+    "gse_expr = gse_expr.dropna(axis=0, how='any')\n",
+    "\n",
+    "print(\"After cleanup:\", gse_expr.shape)\n",
+    "print(\"\\n✅ Missing data handled. Expression matrix is clean.\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---\n",
+    "## Step 4 | Feature engineering (Decoder Ring / Alignment Map)\n",
+    "We extract the clinical metadata from the GSE30550 header and harmonize it into clean, usable features (Subject, Hour, Outcome)."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 1. Extract the raw metadata lines from the GEO text file\n",
+    "meta_data_lines = []\n",
+    "with open(file_path, 'r') as file:\n",
+    "    for line in file:\n",
+    "        if line.startswith('!Sample_'):\n",
+    "            cleaned_line = [item.strip('\\\"\\n') for item in line.split('\\t')]\n",
+    "            meta_data_lines.append(cleaned_line)\n",
+    "\n",
+    "# Convert to DataFrame and transpose so samples are rows\n",
+    "metadata_df = pd.DataFrame(meta_data_lines).set_index(0).T\n",
+    "\n",
+    "# 2. Filter to relevant metadata columns\n",
+    "cols_to_keep = [col for col in metadata_df.columns if 'title' in col or 'characteristics_ch1' in col]\n",
+    "raw_gse_meta = metadata_df[cols_to_keep].copy()\n",
+    "\n",
+    "# ==========================================\n",
+    "# FEATURE ALIGNMENT MAP (Building clean_meta)\n",
+    "# ==========================================\n",
+    "clean_meta = pd.DataFrame()\n",
+    "\n",
+    "# Extract core variables using Regex\n",
+    "clean_meta['Sample_ID'] = raw_gse_meta['!Sample_title']\n",
+    "clean_meta['Patient_ID'] = clean_meta['Sample_ID'].str.extract(r'(Subject \\d+)')\n",
+    "clean_meta['Timepoint_Hours'] = clean_
